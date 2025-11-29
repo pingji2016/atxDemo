@@ -59,12 +59,13 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun CommandScreen(modifier: Modifier = Modifier) {
-    var command by remember { mutableStateOf("adb shell pm") }
+    var command by remember { mutableStateOf("pm list packages -f -3") }
     var expanded by remember { mutableStateOf(false) }
     var selectedPort by remember { mutableStateOf(7980) }
     var host by remember { mutableStateOf("127.0.0.1") }
-    var path by remember { mutableStateOf("/exec") }
+    var path by remember { mutableStateOf("/shell") }
     var useGet by remember { mutableStateOf(false) }
+    var timeoutText by remember { mutableStateOf("60") }
     var output by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -96,9 +97,9 @@ fun CommandScreen(modifier: Modifier = Modifier) {
                 onDismissRequest = { expanded = false }
             ) {
                 DropdownMenuItem(
-                    text = { Text("adb shell pm") },
+                    text = { Text("pm list packages -f -3") },
                     onClick = {
-                        command = "adb shell pm"
+                        command = "pm list packages -f -3"
                         expanded = false
                     }
                 )
@@ -137,6 +138,12 @@ fun CommandScreen(modifier: Modifier = Modifier) {
                 label = { Text("Path") },
                 modifier = Modifier.weight(1f)
             )
+            TextField(
+                value = timeoutText,
+                onValueChange = { timeoutText = it.filter { ch -> ch.isDigit() }.take(5) },
+                label = { Text("Timeout") },
+                modifier = Modifier.weight(1f)
+            )
         }
 
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -156,7 +163,8 @@ fun CommandScreen(modifier: Modifier = Modifier) {
                 loading = true
                 output = ""
                 scope.launch {
-                    val result = sendCommand(host, selectedPort, path, useGet, command)
+                    val timeout = timeoutText.toIntOrNull() ?: 60
+                    val result = sendCommand(host, selectedPort, path, useGet, command, timeout)
                     output = result
                     loading = false
                 }
@@ -184,11 +192,11 @@ fun CommandScreen(modifier: Modifier = Modifier) {
     }
 }
 
-private suspend fun sendCommand(host: String, port: Int, path: String, useGet: Boolean, command: String): String = withContext(Dispatchers.IO) {
+private suspend fun sendCommand(host: String, port: Int, path: String, useGet: Boolean, command: String, timeout: Int): String = withContext(Dispatchers.IO) {
     val base = "http://" + host + ":" + port + path
     val url = if (useGet) {
-        val encoded = URLEncoder.encode(command, "UTF-8")
-        URL(base + "?cmd=" + encoded)
+        val encodedCmd = URLEncoder.encode(command, "UTF-8")
+        URL(base + "?command=" + encodedCmd + "&timeout=" + timeout)
     } else {
         URL(base)
     }
@@ -197,12 +205,14 @@ private suspend fun sendCommand(host: String, port: Int, path: String, useGet: B
         readTimeout = 15000
         requestMethod = if (useGet) "GET" else "POST"
         doOutput = !useGet
-        setRequestProperty("Content-Type", "text/plain; charset=utf-8")
+        setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
     }
     return@withContext try {
         if (!useGet) {
+            val encodedCmd = URLEncoder.encode(command, "UTF-8")
+            val body = "command=" + encodedCmd + "&timeout=" + timeout
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-                w.write(command)
+                w.write(body)
                 w.flush()
             }
         }
