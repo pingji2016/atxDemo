@@ -16,9 +16,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
@@ -42,6 +41,7 @@ import java.io.BufferedReader
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +62,9 @@ fun CommandScreen(modifier: Modifier = Modifier) {
     var command by remember { mutableStateOf("adb shell pm") }
     var expanded by remember { mutableStateOf(false) }
     var selectedPort by remember { mutableStateOf(7980) }
+    var host by remember { mutableStateOf("127.0.0.1") }
+    var path by remember { mutableStateOf("/exec") }
+    var useGet by remember { mutableStateOf(false) }
     var output by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
@@ -75,21 +78,20 @@ fun CommandScreen(modifier: Modifier = Modifier) {
     ) {
         Text(text = "ATX 命令发送", style = MaterialTheme.typography.titleLarge)
 
-        ExposedDropdownMenuBox(
-            expanded = expanded,
-            onExpandedChange = { expanded = !expanded }
-        ) {
+        Box(modifier = Modifier.fillMaxWidth()) {
             TextField(
                 value = command,
                 onValueChange = { command = it },
-                modifier = Modifier
-                    .menuAnchor()
-                    .fillMaxWidth(),
+                modifier = Modifier.fillMaxWidth(),
                 label = { Text("输入命令") },
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) }
+                trailingIcon = {
+                    Button(onClick = { expanded = !expanded }) {
+                        Text(if (expanded) "收起" else "推荐")
+                    }
+                }
             )
 
-            androidx.compose.material3.ExposedDropdownMenu(
+            DropdownMenu(
                 expanded = expanded,
                 onDismissRequest = { expanded = false }
             ) {
@@ -122,13 +124,39 @@ fun CommandScreen(modifier: Modifier = Modifier) {
             }
         }
 
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            TextField(
+                value = host,
+                onValueChange = { host = it },
+                label = { Text("Host") },
+                modifier = Modifier.weight(1f)
+            )
+            TextField(
+                value = path,
+                onValueChange = { path = it },
+                label = { Text("Path") },
+                modifier = Modifier.weight(1f)
+            )
+        }
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row {
+                RadioButton(selected = !useGet, onClick = { useGet = false })
+                Text(text = "POST")
+            }
+            Row {
+                RadioButton(selected = useGet, onClick = { useGet = true })
+                Text(text = "GET")
+            }
+        }
+
         Button(
             onClick = {
                 if (loading) return@Button
                 loading = true
                 output = ""
                 scope.launch {
-                    val result = sendCommand(selectedPort, command)
+                    val result = sendCommand(host, selectedPort, path, useGet, command)
                     output = result
                     loading = false
                 }
@@ -152,23 +180,31 @@ fun CommandScreen(modifier: Modifier = Modifier) {
         }
 
         Spacer(modifier = Modifier.height(8.dp))
-        Text(text = "目标: http://127.0.0.1:${'$'}selectedPort/exec")
+        Text(text = "目标: http://" + host + ":" + selectedPort + path)
     }
 }
 
-private suspend fun sendCommand(port: Int, command: String): String = withContext(Dispatchers.IO) {
-    val url = URL("http://127.0.0.1:${'$'}port/exec")
+private suspend fun sendCommand(host: String, port: Int, path: String, useGet: Boolean, command: String): String = withContext(Dispatchers.IO) {
+    val base = "http://" + host + ":" + port + path
+    val url = if (useGet) {
+        val encoded = URLEncoder.encode(command, "UTF-8")
+        URL(base + "?cmd=" + encoded)
+    } else {
+        URL(base)
+    }
     val conn = (url.openConnection() as HttpURLConnection).apply {
         connectTimeout = 5000
         readTimeout = 15000
-        requestMethod = "POST"
-        doOutput = true
+        requestMethod = if (useGet) "GET" else "POST"
+        doOutput = !useGet
         setRequestProperty("Content-Type", "text/plain; charset=utf-8")
     }
     return@withContext try {
-        OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
-            w.write(command)
-            w.flush()
+        if (!useGet) {
+            OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
+                w.write(command)
+                w.flush()
+            }
         }
         val code = conn.responseCode
         val stream = if (code in 200..299) conn.inputStream else conn.errorStream
@@ -181,9 +217,9 @@ private suspend fun sendCommand(port: Int, command: String): String = withContex
                 sb.appendLine(line)
             }
         }
-        sb.toString()
+        "URL: " + url.toString() + "\nHTTP " + code + "\n" + sb.toString()
     } catch (t: Throwable) {
-        "请求失败: ${'$'}{t.message}"
+        "请求失败: " + t.javaClass.simpleName + ": " + (t.message ?: "") + "\nURL: " + url.toString()
     } finally {
         conn.disconnect()
     }
