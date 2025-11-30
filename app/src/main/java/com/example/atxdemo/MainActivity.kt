@@ -42,6 +42,7 @@ import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
+import kotlin.math.max
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -192,25 +193,34 @@ fun CommandScreen(modifier: Modifier = Modifier) {
     }
 }
 
+private fun sanitizePath(p: String): String = if (p.startsWith("/")) p else "/" + p
+
+private fun buildBase(host: String, port: Int, path: String): String = "http://" + host + ":" + port + sanitizePath(path)
+
+private fun buildForm(command: String, timeout: Int): String {
+    val encodedCmd = URLEncoder.encode(command, "UTF-8")
+    return "command=" + encodedCmd + "&timeout=" + timeout
+}
+
 private suspend fun sendCommand(host: String, port: Int, path: String, useGet: Boolean, command: String, timeout: Int): String = withContext(Dispatchers.IO) {
-    val base = "http://" + host + ":" + port + path
+    if (host.isBlank()) return@withContext "请求失败: IllegalArgumentException: Host 为空"
+    if (port !in 1..65535) return@withContext "请求失败: IllegalArgumentException: 端口无效"
+    val base = buildBase(host, port, path)
     val url = if (useGet) {
-        val encodedCmd = URLEncoder.encode(command, "UTF-8")
-        URL(base + "?command=" + encodedCmd + "&timeout=" + timeout)
+        URL(base + "?" + buildForm(command, timeout))
     } else {
         URL(base)
     }
     val conn = (url.openConnection() as HttpURLConnection).apply {
         connectTimeout = 5000
-        readTimeout = 15000
+        readTimeout = max(5000, (timeout + 5) * 1000)
         requestMethod = if (useGet) "GET" else "POST"
         doOutput = !useGet
         setRequestProperty("Content-Type", "application/x-www-form-urlencoded; charset=utf-8")
     }
     return@withContext try {
         if (!useGet) {
-            val encodedCmd = URLEncoder.encode(command, "UTF-8")
-            val body = "command=" + encodedCmd + "&timeout=" + timeout
+            val body = buildForm(command, timeout)
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { w ->
                 w.write(body)
                 w.flush()
