@@ -43,6 +43,13 @@ import java.net.HttpURLConnection
 import java.net.URL
 import java.net.URLEncoder
 import kotlin.math.max
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.WebSocket
+import okhttp3.WebSocketListener
+import okhttp3.Response
+import okio.ByteString
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -69,6 +76,15 @@ fun CommandScreen(modifier: Modifier = Modifier) {
     var timeoutText by remember { mutableStateOf("60") }
     var output by remember { mutableStateOf("") }
     var loading by remember { mutableStateOf(false) }
+    var wsUrl by remember { mutableStateOf("") }
+    var wsConnected by remember { mutableStateOf(false) }
+    var wsStatus by remember { mutableStateOf("") }
+    var webSocket by remember { mutableStateOf<WebSocket?>(null) }
+    val wsClient = remember {
+        OkHttpClient.Builder()
+            .pingInterval(30, TimeUnit.SECONDS)
+            .build()
+    }
     val scope = rememberCoroutineScope()
     val scroll = rememberScrollState()
 
@@ -190,12 +206,69 @@ fun CommandScreen(modifier: Modifier = Modifier) {
 
         Spacer(modifier = Modifier.height(8.dp))
         Text(text = "目标: http://" + host + ":" + selectedPort + path)
+
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Button(onClick = {
+                if (wsConnected) return@Button
+                wsUrl = buildWsUrl(host, selectedPort, path)
+                val req = Request.Builder().url(wsUrl).build()
+                val listener = object : WebSocketListener() {
+                    override fun onOpen(webSocket: WebSocket, response: Response) {
+                        wsConnected = true
+                        wsStatus = "已连接"
+                        scope.launch { output = appendOutputLine(output, "WS Open: " + wsUrl) }
+                    }
+                    override fun onMessage(webSocket: WebSocket, text: String) {
+                        scope.launch { output = appendOutputLine(output, "WS Message: " + text) }
+                        if (text.trim() == "ping") {
+                            webSocket.send("pong")
+                            scope.launch { output = appendOutputLine(output, "WS Auto Pong") }
+                        }
+                    }
+                    override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
+                        scope.launch { output = appendOutputLine(output, "WS Binary " + bytes.size() + " bytes") }
+                    }
+                    override fun onClosing(webSocket: WebSocket, code: Int, reason: String) {
+                        scope.launch { output = appendOutputLine(output, "WS Closing: " + code + " " + reason) }
+                        wsConnected = false
+                        webSocket.close(code, reason)
+                    }
+                    override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
+                        wsConnected = false
+                        wsStatus = "已断开"
+                        scope.launch { output = appendOutputLine(output, "WS Closed: " + code + " " + reason) }
+                    }
+                    override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
+                        wsConnected = false
+                        wsStatus = "失败: " + (t.message ?: "")
+                        scope.launch { output = appendOutputLine(output, "WS Failure: " + (t.message ?: "") ) }
+                    }
+                }
+                webSocket = wsClient.newWebSocket(req, listener)
+            }) { Text("连接WS") }
+
+            Button(onClick = {
+                webSocket?.send("ping")
+                scope.launch { output = appendOutputLine(output, "WS Send: ping") }
+            }, enabled = wsConnected) { Text("发送Ping") }
+
+            Button(onClick = {
+                webSocket?.close(1000, "bye")
+                webSocket = null
+            }, enabled = wsConnected) { Text("断开WS") }
+        }
+
+        if (wsUrl.isNotEmpty()) {
+            Text(text = "WS: " + wsUrl + " 状态: " + wsStatus)
+        }
     }
 }
 
 private fun sanitizePath(p: String): String = if (p.startsWith("/")) p else "/" + p
 
 private fun buildBase(host: String, port: Int, path: String): String = "http://" + host + ":" + port + sanitizePath(path)
+
+private fun buildWsUrl(host: String, port: Int, path: String): String = "ws://" + host + ":" + port + sanitizePath(path)
 
 private fun buildForm(command: String, timeout: Int): String {
     val encodedCmd = URLEncoder.encode(command, "UTF-8")
@@ -243,6 +316,10 @@ private suspend fun sendCommand(host: String, port: Int, path: String, useGet: B
     } finally {
         conn.disconnect()
     }
+}
+
+private fun appendOutputLine(current: String, line: String): String {
+    return if (current.isEmpty()) line else current + "\n" + line
 }
 
 @Preview(showBackground = true)
